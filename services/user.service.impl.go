@@ -80,7 +80,7 @@ func (us *UserServiceImpl) FindUserById(id string) (*models.DBUser, error) {
 
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
-			return &models.DBUser{}, err
+			return nil, err
 		}
 		return nil, err
 	}
@@ -98,7 +98,7 @@ func (us *UserServiceImpl) FindUserByUsername(username string) (*models.DBUser, 
 
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
-			return &models.DBUser{}, err
+			return nil, err
 		}
 		return nil, err
 	}

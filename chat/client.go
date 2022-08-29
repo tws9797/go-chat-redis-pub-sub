@@ -104,13 +104,14 @@ func (c *Client) writePump() {
 	for {
 		select {
 		case message, ok := <-c.send:
-			fmt.Println("writing....")
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if !ok {
 				//wsSocket close the channel
 				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
+
+			fmt.Println(string(message))
 
 			w, err := c.conn.NextWriter(websocket.TextMessage)
 			if err != nil {
@@ -129,12 +130,10 @@ func (c *Client) writePump() {
 				return
 			}
 		case <-ticker.C:
-			fmt.Println("ticker...")
 			// Setting a new write deadline
 			// Write to a connection returns an error when the write operation does not complete by the last set deadline
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				fmt.Println("empty")
 				return
 			}
 		}
@@ -159,7 +158,6 @@ func (c *Client) readPump() {
 	})
 
 	for {
-		fmt.Println("reading....")
 		_, message, err := c.conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
@@ -167,8 +165,6 @@ func (c *Client) readPump() {
 			}
 			break
 		}
-		//message = bytes.TrimSpace(bytes.Replace(message, newline, space, -1))
-		//c.hub.broadcast <- message
 
 		c.handleNewMessage(message)
 	}
@@ -182,7 +178,6 @@ func (c *Client) handleNewMessage(jsonMessage []byte) {
 	}
 
 	message.Sender = c
-	fmt.Println(message.Action)
 	switch message.Action {
 	case SendMessageAction:
 		roomID := message.Target.GetId()
@@ -219,7 +214,9 @@ func (c *Client) handleLeaveRoomMessage(message Message) {
 }
 
 func (c *Client) handleJoinRoomPrivateMessage(message Message) {
-	target := c.hub.findClientByID(message.Message)
+	fmt.Println("handleJoinRoomPrivateMessage")
+	target := c.hub.findUserByID(message.Message)
+
 	if target == nil {
 		return
 	}
@@ -264,10 +261,11 @@ func (c *Client) inviteTargetUser(target models.User, room *Room) {
 		Sender:  c,
 	}
 
-	if err := redisClient.Publish(ctx, PubSubGeneralChannel, inviteMessage).Err(); err != nil {
+	if err := redisClient.Publish(ctx, PubSubGeneralChannel, inviteMessage.encode()).Err(); err != nil {
 		log.Println(err)
 	}
 }
+
 func (c *Client) isInRoom(room *Room) bool {
 	if _, ok := c.rooms[room]; ok {
 		return true
@@ -276,11 +274,13 @@ func (c *Client) isInRoom(room *Room) bool {
 }
 
 func (c *Client) notifyRoomJoined(room *Room, sender models.User) {
+	fmt.Println("notifyRoomJoined")
 	message := Message{
 		Action: RoomJoinedAction,
 		Target: room,
 		Sender: sender,
 	}
+	fmt.Println(message)
 
 	c.send <- message.encode()
 }

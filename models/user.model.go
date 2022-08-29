@@ -38,7 +38,7 @@ type CreateUserRequest struct {
 }
 
 func (user *DBUser) GetID() string {
-	return user.ID.String()
+	return user.ID.Hex()
 }
 
 func (user *DBUser) GetUsername() string {

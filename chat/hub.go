@@ -2,6 +2,7 @@ package chat
 
 import (
 	"encoding/json"
+	"fmt"
 	"github.com/go-redis/redis/v8"
 	"go-chat-redis-pub-sub/models"
 	"go-chat-redis-pub-sub/services"
@@ -24,9 +25,6 @@ type Hub struct {
 	// Unregister requests from the clients
 	unregister chan *Client
 
-	// Inbound messages from the clients.
-	broadcast chan []byte
-
 	// Keep tracks of the rooms in the hub
 	rooms map[*Room]bool
 
@@ -46,7 +44,6 @@ func NewHub(userService services.UserService, roomService services.RoomService, 
 
 	hub := &Hub{
 		clients:     make(map[*Client]bool),
-		broadcast:   make(chan []byte),
 		register:    make(chan *Client),
 		unregister:  make(chan *Client),
 		rooms:       make(map[*Room]bool),
@@ -61,7 +58,6 @@ func NewHub(userService services.UserService, roomService services.RoomService, 
 	}
 
 	hub.users = make([]models.User, len(dbUsers))
-
 	for i, v := range dbUsers {
 		hub.users[i] = v
 	}
@@ -71,29 +67,48 @@ func NewHub(userService services.UserService, roomService services.RoomService, 
 
 // Run Hub server using broadcast, register and unregister channels to listen for different inbound messages
 func (h *Hub) Run() {
+	go h.listenPubSubChannel()
 	for {
 		select {
 		case client := <-h.register:
 			h.registerClient(client)
 		case client := <-h.unregister:
 			h.unregisterClient(client)
-		case message := <-h.broadcast:
-			h.broadcastToClients(message)
+		}
+	}
+}
+
+func (h *Hub) listenPubSubChannel() {
+	ctx := context.TODO()
+
+	pubsub := redisClient.Subscribe(ctx, PubSubGeneralChannel)
+	ch := pubsub.Channel()
+
+	for msg := range ch {
+		fmt.Println("listenPubSubChannel")
+		fmt.Println(msg)
+
+		var message Message
+		if err := json.Unmarshal([]byte(msg.Payload), &message); err != nil {
+			log.Printf("Error on unmarshal JSON message %s", err)
+			return
+		}
+
+		fmt.Println("listenPubSubChannel: message Action")
+		fmt.Println(message.Action)
+		switch message.Action {
+		case UserJoinedAction:
+			h.handleUserJoined(message)
+		case UserLeftAction:
+			h.handleUserLeft(message)
+		case JoinRoomPrivateAction:
+			h.handleUserJoinPrivate(message)
 		}
 	}
 }
 
 // Register client pointer
 func (h *Hub) registerClient(client *Client) {
-
-	if user := h.findUserByID(client.GetID()); user == nil {
-		h.authService.SignUpUser(
-			&models.SignUpInput{
-				Username: user.GetUsername(),
-				Password: "TEST",
-			})
-	}
-
 	h.publishClientJoined(client)
 	h.listOnlineClients(client)
 	h.clients[client] = true
@@ -110,14 +125,8 @@ func (h *Hub) unregisterClient(client *Client) {
 
 // Send read messages to registered clients
 func (h *Hub) broadcastToClients(message []byte) {
-	//for client := range h.clients {
-	//	select {
-	//	case client.send <- message:
-	//	default:
-	//		close(client.send)
-	//		delete(h.clients, client)
-	//	}
-	//}
+	fmt.Println("broadcastToClients")
+	fmt.Println(h.clients)
 	for client := range h.clients {
 		client.send <- message
 	}
@@ -148,8 +157,7 @@ func (h *Hub) runRoomFromRepository(name string) *Room {
 	}
 
 	if dbRoom != nil {
-		room = NewRoom(dbRoom.Name, dbRoom.Private)
-		room.ID = dbRoom.ID
+		room = NewRoom(dbRoom.ID.Hex(), dbRoom.Name, dbRoom.Private)
 
 		go room.RunRoom()
 		h.rooms[room] = true
@@ -172,17 +180,20 @@ func (h *Hub) findRoomByID(ID string) *Room {
 
 // Create Room
 func (h *Hub) createRoom(name string, private bool) *Room {
-	room := NewRoom(name, private)
 
 	roomInput := &models.RoomInput{
-		Name:    room.Name,
-		Private: room.Private,
+		Name:    name,
+		Private: private,
 	}
 
-	_, err := h.roomService.AddRoom(roomInput)
+	dbRoom, err := h.roomService.AddRoom(roomInput)
 	if err != nil {
 		return nil
 	}
+
+	fmt.Println(dbRoom)
+
+	room := NewRoom(dbRoom.ID.Hex(), dbRoom.Name, dbRoom.Private)
 
 	go room.RunRoom()
 	h.rooms[room] = true
@@ -208,6 +219,19 @@ func (h *Hub) notifyClientLeft(client *Client) {
 	h.broadcastToClients(message.encode())
 }
 
+func (h *Hub) publishClientJoined(client *Client) {
+	ctx := context.TODO()
+
+	message := &Message{
+		Action: UserJoinedAction,
+		Sender: client,
+	}
+
+	if err := redisClient.Publish(ctx, PubSubGeneralChannel, message.encode()).Err(); err != nil {
+		log.Println(err)
+	}
+}
+
 func (h *Hub) listOnlineClients(client *Client) {
 
 	var uniqueUsers = make(map[string]bool)
@@ -223,31 +247,6 @@ func (h *Hub) listOnlineClients(client *Client) {
 	}
 }
 
-func (h *Hub) findClientByID(ID string) *Client {
-	var foundClient *Client
-	for client := range h.clients {
-		if client.GetID() == ID {
-			foundClient = client
-			break
-		}
-	}
-
-	return foundClient
-}
-
-func (h *Hub) publishClientJoined(client *Client) {
-	ctx := context.TODO()
-
-	message := &Message{
-		Action: UserJoinedAction,
-		Sender: client,
-	}
-
-	if err := redisClient.Publish(ctx, PubSubGeneralChannel, message).Err(); err != nil {
-		log.Println(err)
-	}
-}
-
 func (h *Hub) publishClientLeft(client *Client) {
 	ctx := context.TODO()
 
@@ -258,31 +257,6 @@ func (h *Hub) publishClientLeft(client *Client) {
 
 	if err := redisClient.Publish(ctx, PubSubGeneralChannel, message.encode()).Err(); err != nil {
 		log.Println(err)
-	}
-}
-
-func (h *Hub) listenPubSubChannel() {
-	ctx := context.TODO()
-
-	pubsub := redisClient.Subscribe(ctx, PubSubGeneralChannel)
-	ch := pubsub.Channel()
-
-	var message Message
-	for msg := range ch {
-		var message Message
-		if err := json.Unmarshal([]byte(msg.Payload), &message); err != nil {
-			log.Printf("Error on unmarshal JSON message %s", err)
-			return
-		}
-	}
-
-	switch message.Action {
-	case UserJoinedAction:
-		h.handleUserJoined(message)
-	case UserLeftAction:
-		h.handleUserLeft(message)
-	case JoinRoomPrivateAction:
-		h.handleUserJoinPrivate(message)
 	}
 }
 
@@ -322,9 +296,9 @@ func (h *Hub) handleUserLeft(message Message) {
 	h.broadcastToClients(message.encode())
 }
 
-// Add the findUserByID method used by client.go
 func (h *Hub) findUserByID(ID string) models.User {
 	var foundUser models.User
+
 	for _, client := range h.users {
 		if client.GetID() == ID {
 			foundUser = client

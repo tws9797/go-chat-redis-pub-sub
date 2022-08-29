@@ -2,7 +2,6 @@ package chat
 
 import (
 	"fmt"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	"golang.org/x/net/context"
 	"log"
 )
@@ -10,9 +9,9 @@ import (
 const welcomeMessage = "%s joined the room"
 
 type Room struct {
-	ID      primitive.ObjectID `json:"id"`
-	Name    string             `json:"name"`
-	Private bool               `json:"private"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Private bool   `json:"private"`
 
 	//Registered clients
 	clients map[*Client]bool
@@ -25,25 +24,25 @@ type Room struct {
 
 	// Inbound messages from the clients.
 	broadcast chan *Message
-	rooms     map[*Room]bool
 }
 
 // NewRoom creates a new Room type
-func NewRoom(name string, private bool) *Room {
+func NewRoom(id string, name string, private bool) *Room {
 	return &Room{
-		ID:         primitive.NewObjectID(),
+		ID:         id,
 		Name:       name,
 		Private:    private,
 		clients:    make(map[*Client]bool),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
 		broadcast:  make(chan *Message),
-		rooms:      make(map[*Room]bool),
 	}
 }
 
 // RunRoom runs our room, accepting various requests
 func (room *Room) RunRoom() {
+	go room.subscribeToRoomMessages()
+
 	for {
 		select {
 		case client := <-room.register:
@@ -78,28 +77,10 @@ func (room *Room) broadcastToClientsInRoom(message []byte) {
 	}
 }
 
-func (room *Room) notifyClientJoined(client *Client) {
-	message := &Message{
-		Action:  SendMessageAction,
-		Target:  room,
-		Message: fmt.Sprintf(welcomeMessage, client.GetUsername()),
-	}
-
-	room.publishRoomMessage(message.encode())
-}
-
-// GetId get the room ID
-func (room *Room) GetId() string {
-	return room.ID.String()
-}
-
-// GetName get the room name
-func (room *Room) GetName() string {
-	return room.Name
-}
-
 func (room *Room) publishRoomMessage(message []byte) {
 	ctx := context.TODO()
+
+	fmt.Println("publishRoomMessage")
 
 	err := redisClient.Publish(ctx, room.Name, message).Err()
 
@@ -118,4 +99,28 @@ func (room *Room) subscribeToRoomMessages() {
 	for msg := range ch {
 		room.broadcastToClientsInRoom([]byte(msg.Payload))
 	}
+}
+
+func (room *Room) notifyClientJoined(client *Client) {
+	message := &Message{
+		Action:  SendMessageAction,
+		Target:  room,
+		Message: fmt.Sprintf(welcomeMessage, client.GetUsername()),
+	}
+
+	room.publishRoomMessage(message.encode())
+}
+
+// GetId get the room ID
+func (room *Room) GetId() string {
+	return room.ID
+}
+
+// GetName get the room name
+func (room *Room) GetName() string {
+	return room.Name
+}
+
+func (room *Room) GetPrivate() bool {
+	return room.Private
 }

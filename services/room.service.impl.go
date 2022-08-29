@@ -54,7 +54,7 @@ func (rs *RoomServiceImpl) FindRoomByName(roomName string) (*models.RoomDBRespon
 
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
-			return &models.RoomDBResponse{}, err
+			return nil, err
 		}
 
 		return nil, err
